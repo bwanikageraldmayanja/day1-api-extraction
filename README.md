@@ -10,7 +10,7 @@ The script `extract_customers.py` runs a small ETL pipeline:
 3. **Select:** `extract_core_fields` pulls id, name, email, city and company name, with safe defaults for missing keys.
 4. **Restructure:** `build_structures` builds a list of names, a list of (id, email) tuples and an id → city dict, using list and dict comprehensions.
 5. **Flatten:** `flatten_user` recursively collapses nested dicts into single-level keys like `address_geo_lat`, with no field names hard-coded.
-6. **Transform:** `to_dataframe` loads the records into pandas, lowercases column names, renames `id` to `customer_id`, converts coordinates to numbers, and orders the columns to match the expected output.
+6. **Transform:** `to_dataframe` loads the records into pandas, lowercases column names, renames `id` to `customer_id`, orders the columns to match the expected output, and converts coordinates to numbers. It then drops rows with a blank or duplicated `customer_id` (keeping the first copy) and prints the DataFrame's shape and column types, so a column that silently changes type is easy to spot.
 7. **Load:** `export_csv` writes `output/customers_clean.csv` (creating the folder if needed), without the index, overwriting any previous file.
 
 ## How to run
@@ -47,10 +47,10 @@ Note: `lat` and `lng` are stored as strings and are converted to numbers in Task
 
 ## Assumptions
 
-- **Missing fields (Task 3):** if a field is missing, `extract_core_fields` uses the default `"Unknown"` instead of crashing. Missing nested parents (`address` or `company`) are handled by defaulting to an empty dict first, e.g. `user.get("address", {}).get("city", "Unknown")`. A missing `id` becomes `None`, since "Unknown" is not a sensible id.
-- Tested with a record that has no email, address or company: `{"id": 99, "name": "Test User"}` returned `Unknown` for all three, with no crash.
+- **Missing fields (Task 3):** if a field is missing, `extract_core_fields` uses the default `"Unknown"` instead of crashing. Nested parents use `(user.get("address") or {}).get("city", "Unknown")`: a plain `.get("address", {})` only covers a missing key, while `or {}` also covers a key whose value is `null`. A missing `id` becomes `None`, since "Unknown" is not a sensible id.
 - **Flattening (Task 5):** `flatten_user` is recursive and hard-codes no field names. Nested keys are joined with `_` (e.g. `address → geo → lat` becomes `address_geo_lat`), at any depth. Tested on an unseen record nested 3 levels deep: `{"shipping": {"warehouse": {"location": {"country": "Kenya"}}}}` became `shipping_warehouse_location_country`.
 - **DataFrame (Task 6):** all column names are lowercased (fixing `catchPhrase`), `id` is renamed to `customer_id`, and `address_geo_lat` / `address_geo_lng` are converted with `pd.to_numeric(errors="coerce")`, so any value that can't be converted becomes empty instead of crashing. Columns are reordered to match the expected output; any missing column would be filled with empty values.
+- **Customer IDs:** rows with a blank or duplicated `customer_id` are dropped before export, the first copy is kept, and the number dropped is printed. Tested with four fake records (a duplicate ID and a blank ID among them): two rows were dropped and the IDs stayed whole numbers.
 
 ## Error handling (Task 8)
 
@@ -62,5 +62,9 @@ Every failure prints one clear `Error: ...` message and exits with code 1. There
 | Wrong URL | `fetch_users("https://this-site-does-not-exist-12345.com/users")` | `Could not connect to ... Check the URL and your internet connection.` |
 | Timeout | `fetch_users(timeout=0.001)` | `Request timed out after 0.001 seconds: ...` |
 | Body not JSON | `fetch_users("https://jsonplaceholder.typicode.com/")` (returns HTML with status 200) | `Response from ... is not valid JSON` |
+| Payload is not a list | `fetch_users(".../users/1")` (returns one user as a dict) | `Expected a list of users from ..., got dict` |
+| Payload is an empty list | `fetch_users(".../users?id=999")` (returns `[]`) | `API returned an empty list of users: ...` |
 
 I checked the exit code after each test with `echo %ERRORLEVEL%`, which printed `1`.
+
+Any other unexpected error is caught by a final `except Exception` in `__main__`, which prints `Unexpected error: <type>: <message>` and exits with code 1, so no run ends in a raw traceback.

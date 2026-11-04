@@ -42,9 +42,15 @@ def fetch_users(url: str = API_URL, timeout: float = 10.0) -> list[dict]:
         raise RuntimeError(f"API returned status {response.status_code} for {url}")
 
     try:
-        return response.json()
+        payload = response.json()
     except ValueError:
         raise RuntimeError(f"Response from {url} is not valid JSON")
+
+    if not isinstance(payload, list):
+        raise RuntimeError(f"Expected a list of users from {url}, got {type(payload).__name__}")
+    if not payload:
+        raise RuntimeError(f"API returned an empty list of users: {url}")
+    return payload
 
 
 def _print_types(data: dict, indent: int = 1) -> None:
@@ -72,8 +78,8 @@ def extract_core_fields(users: list[dict]) -> list[dict]:
             "id": user.get("id"),
             "name": user.get("name", "Unknown"),
             "email": user.get("email", "Unknown"),
-            "city": user.get("address", {}).get("city", "Unknown"),
-            "company": user.get("company", {}).get("name", "Unknown"),
+            "city": (user.get("address") or {}).get("city", "Unknown"),
+            "company": (user.get("company") or {}).get("name", "Unknown"),
         }
         core.append(record)         # add this user's small dict to the list
     return core                     # hand back the full list
@@ -86,7 +92,7 @@ def build_structures(users: list[dict]) -> tuple[list, list[tuple], dict]:
     """
     names = [user.get("name", "Unknown") for user in users]
     id_emails = [(user.get("id"), user.get("email", "Unknown")) for user in users]
-    id_to_city = {user.get("id"): user.get("address", {}).get("city", "Unknown") for user in users}
+    id_to_city = {user.get("id"): (user.get("address") or {}).get("city", "Unknown") for user in users}    
     return names, id_emails, id_to_city
 
 
@@ -106,13 +112,30 @@ def flatten_user(user: dict, parent_key: str = "", sep: str = "_") -> dict:
 
 
 def to_dataframe(flat_users: list[dict]) -> pd.DataFrame:
-    """Build a DataFrame with the columns in the expected-output order."""
+    """Build a DataFrame with the columns in the expected-output order.
+
+    Rows with a blank or duplicated customer_id are dropped, then the
+    shape and column types are printed so type problems are easy to spot.
+    """
     df = pd.DataFrame(flat_users)
     df.columns = df.columns.str.lower()
     df = df.rename(columns={"id": "customer_id"})
+    df = df.reindex(columns=EXPECTED_COLUMNS)
     for col in ["address_geo_lat", "address_geo_lng"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.reindex(columns=EXPECTED_COLUMNS)
+
+    
+    rows_before = len(df)
+    has_id = df["customer_id"].notna() & (df["customer_id"].astype(str).str.strip() != "")
+    df = df[has_id].drop_duplicates(subset="customer_id", keep="first")
+    df["customer_id"] = df["customer_id"].astype("int64")
+    dropped = rows_before - len(df)
+    if dropped:
+        print(f"\nDropped {dropped} row(s) with a blank or duplicate customer_id")
+
+    print(f"\nDataFrame shape: {df.shape[0]} rows x {df.shape[1]} columns")
+    print("Column types:")
+    print(df.dtypes.to_string())
     return df
 
 
@@ -147,4 +170,7 @@ if __name__ == "__main__":
         main()
     except RuntimeError as error:
         print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as error:
+        print(f"Unexpected error: {type(error).__name__}: {error}", file=sys.stderr)
         sys.exit(1)
